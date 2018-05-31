@@ -1,0 +1,393 @@
+theory tp89
+imports Main "~~/src/HOL/Library/Code_Target_Nat"
+begin
+
+(* 
+quickcheck_params [size=6,tester=narrowing,timeout=120]
+nitpick_params [timeout=120]
+*)
+
+type_synonym transid= "nat*nat*nat" (*c,m,i*)
+
+datatype message= 
+  Pay transid nat  
+| Ack transid nat
+| Cancel transid
+
+type_synonym transaction= "transid * nat" (* ((c,m,i),am) *)
+
+
+
+(*********MY TYPES OF VARS**********)
+
+(*  messageList
+  list of messages still to be processed.
+*)
+type_synonym messageList = "message list"
+
+(*  vals
+  contain an amount or None
+*)
+type_synonym vals= "nat option"
+
+(*  transidvals
+  contain the transid, the current amount expected to be paid by the client, and the current amount expected to be sold by the marchant, and if the transaction is still possible or not
+transid * pay_amount * sell_amount * is the transaction not closed nor validated
+*)
+type_synonym transidvals = "transid * vals * vals * bool" (* ((c,m,i),amc,amm,isAvailable) *)
+
+
+(*  transBdd
+  list of transidvals that are still happening and transactions validated
+transidvals list * transaction validés list
+*)
+type_synonym transBdd = "transidvals list * transaction list" (* ((c,m,i),amc,amm,isAvailable)list * ((c,m,i),am)list *)
+
+
+
+
+
+
+
+(*****************UPDATE TRANSIDVAL LIST******************)
+
+(* updateValsPay
+RETREIVE: vals to update AND nat to affect to it
+RETURN:   vals update if it's allowed
+*)
+fun updateValsPay :: "vals \<Rightarrow> nat \<Rightarrow> vals"
+where
+"updateValsPay None n = (Some n)"|
+"updateValsPay (Some v) n = (if v \<ge> n then (Some v) else (Some n))"
+
+
+(* updateValsAck
+RETREIVE: vals to update AND nat to affect to it
+RETURN:   vals update if it's allowed
+*)
+fun updateValsAck :: "vals \<Rightarrow> nat \<Rightarrow> vals"
+where
+"updateValsAck None n = (Some n)"|
+"updateValsAck (Some v) n = (if v \<le> n then (Some v) else (Some n))"
+
+
+(* updateTransidvalsPay
+RETREIVE: transidvals to update AND nat to affect to the pay_amount
+RETURN:   transidvals updated with the pay_amount
+*)
+fun updateTransidvalsPay :: "transidvals \<Rightarrow> nat \<Rightarrow> transidvals"
+where
+"updateTransidvalsPay (transid, pay , ack, test) n = (if test then (transid, (updateValsPay pay n), ack, test) 
+                                                              else (transid, pay , ack, test))"
+
+(* updateTransidvalsAck
+RETREIVE: transidvals to update AND nat to affect to the sell_amount
+RETURN:   transidvals updated with the pay_amount
+*)
+fun updateTransidvalsAck :: "transidvals \<Rightarrow> nat \<Rightarrow> transidvals"
+where
+"updateTransidvalsAck (transid, pay , ack, test) n = (if test then (transid, pay, (updateValsAck ack n), test) 
+                                                              else (transid, pay , ack, test))"
+
+
+(* updateTransidvalsCancel
+RETREIVE: transidvals to update
+RETURN:   transidvals updated to be cancelled
+*)
+fun updateTransidvalsCancel :: "transidvals  \<Rightarrow> transidvals"
+where
+"updateTransidvalsCancel (transid, pay , ack, test) = (transid, pay, ack, False)"
+
+
+
+(* updateTransidvalsListPay
+RETREIVE: transid to modify AND nat to affect to the pay_amount AND in transidvals list to update
+RETURN:   transidvlas list updated with the pay_amount
+*)
+fun updateTransidvalsListPay :: " transidvals list \<Rightarrow> transid \<Rightarrow> nat \<Rightarrow> transidvals list"
+where
+"updateTransidvalsListPay [] transid n = (transid, (Some n), None, True)#[]"|
+"updateTransidvalsListPay ((htransid , hamc, hamm, hisAvailable)#t) transid n =
+        (if htransid = transid
+          then (updateTransidvalsPay (htransid , hamc, hamm, hisAvailable) n)#t
+          else (htransid , hamc, hamm, hisAvailable)#(updateTransidvalsListPay t transid n)
+        )"
+
+
+(* updateTransidvalsListAck
+RETREIVE: transid to modify AND nat to affect to the sell_amount AND in transidvals list to update
+RETURN:   transivals list updated with the pay_amount
+*)
+fun updateTransidvalsListAck :: " transidvals list \<Rightarrow> transid \<Rightarrow> nat \<Rightarrow> transidvals list"
+where
+"updateTransidvalsListAck [] transid n =  (transid, None, (Some n), True)#[]"|
+"updateTransidvalsListAck ((htransid , hamc, hamm, hisAvailable)#t) transid n =
+        (if htransid = transid
+          then (updateTransidvalsAck (htransid , hamc, hamm, hisAvailable) n)#t
+          else (htransid , hamc, hamm, hisAvailable)#(updateTransidvalsListAck t transid n)
+        )"
+
+(* updateTransidvalsListCancel
+RETREIVE: transid to block AND in transBdd to update
+RETURN:   transBdd updated with the pay_amount
+*)
+fun updateTransidvalsListCancel :: " transidvals list \<Rightarrow> transid \<Rightarrow> transidvals list"
+where
+"updateTransidvalsListCancel [] transid = (transid, None, None, False)#[]"|
+"updateTransidvalsListCancel ((htransid , hamc, hamm, hisAvailable)#t) transid =
+        (if htransid = transid
+          then (updateTransidvalsCancel (htransid , hamc, hamm, hisAvailable))#t
+          else (htransid , hamc, hamm, hisAvailable)#(updateTransidvalsListCancel t transid)
+        )"
+
+
+
+(***********************MAINTAIN TRANSACTION LIST*****************************)
+
+
+
+(*isNotInTransaction
+RETRIEVE:  transid to test AND transaction to search in
+RETURN: bool True if transid not in transaction
+*)
+fun isNotInTransaction :: "transid \<Rightarrow> transaction list \<Rightarrow> bool"
+where
+"isNotInTransaction transid [] = True"|
+"isNotInTransaction transid ((htransid, hn)#ttr) = (if (htransid = transid)
+                                                    then False
+                                                    else (isNotInTransaction transid ttr))"
+
+(*validable
+RETRIEVE:  transidvals to test if need to be validate
+RETURN: bool
+*)
+fun validable :: "transidvals \<Rightarrow> transaction list \<Rightarrow> bool"
+where
+"validable (transid, (Some amc), (Some amm), isAvailable) transaction = (isAvailable \<and> (amc \<ge> amm) \<and> (amc\<noteq>0) \<and> (isNotInTransaction transid transaction))"|
+"validable _ _ = False"
+
+(*validate
+RETRIEVE:  transidvals to validate AND transaction
+RETURN: transaction updated
+*)
+fun validate :: "transidvals \<Rightarrow> transaction list \<Rightarrow> transaction list"
+where
+"validate (transid, (Some amc), (Some amm), isAvailable) transaction = (transid, amc)#transaction"|
+"validate _ transaction = transaction"
+
+(*keepheader
+RETRIEVE:  transidvals to keep AND transBdd
+RETURN: transBdd
+*)
+fun keepHeader :: "transidvals \<Rightarrow> transBdd \<Rightarrow> transBdd"
+where
+"keepHeader keeptrans (transidval, transaction) = ((keeptrans#transidval),transaction)"
+
+(*keepheaderSnd
+RETRIEVE:  transaction to keep AND transBdd
+RETURN: transBdd
+*)
+fun keepHeaderSnd :: "transaction \<Rightarrow> transBdd \<Rightarrow> transBdd"
+where
+"keepHeaderSnd keeptrans (transidval, transaction) = (transidval,(keeptrans#transaction))"
+
+
+(*updateTransaction
+RETRIEVE: current transidvals List AND transactions list to update
+RETURN: proper transBdd
+*)
+fun updateTransaction :: "transidvals list \<Rightarrow> transaction list \<Rightarrow> transBdd"
+where
+"updateTransaction [] transaction = ([], transaction)"|
+"updateTransaction (htransidvals#ttransidvals) transaction = (if (validable htransidvals transaction)
+                                                                 then (updateTransaction ttransidvals (validate htransidvals transaction))
+                                                                 else (keepHeader htransidvals (updateTransaction ttransidvals transaction))
+                                                                )
+"
+
+(*updateTransactionCancel
+RETRIEVE: transid AND transactions list to update
+RETURN: proper transBdd
+*)
+fun updateTransactionCancel :: "transid \<Rightarrow> transidvals list \<Rightarrow> transaction list \<Rightarrow> transBdd"
+where
+"updateTransactionCancel transid transidvals [] = (transidvals, [])"|
+"updateTransactionCancel transid transidvals ((htransid,hn)#ttransaction) = (if (htransid = transid)
+                                                                        then (transidvals, ttransaction)
+                                                                        else (keepHeaderSnd (htransid,hn) (updateTransactionCancel transid transidvals ttransaction)))
+"
+
+
+
+(*updateTransactionBdd
+RETRIEVE: transBdd to update
+RETURN: proper transBdd
+*)
+fun updateTransactionBdd :: "transBdd \<Rightarrow> transBdd"
+where
+"updateTransactionBdd (transidvals, transaction) = (updateTransaction transidvals transaction)"
+
+(*updateTransactionBddCancel
+RETRIEVE: transBdd to update
+RETURN: proper transBdd
+*)
+fun updateTransactionBddCancel :: "transid \<Rightarrow> transBdd \<Rightarrow> transBdd"
+where
+"updateTransactionBddCancel transid (transidvals, transaction) = (updateTransactionCancel transid transidvals transaction)"
+
+
+(*tidValidated
+RETRIEVE: a transid and current validated transaction
+RETURN: if the transid already have been validated
+*)
+fun tidValidated :: "transid \<Rightarrow> transaction list \<Rightarrow> bool"
+where
+"tidValidated _ [] = False"|
+"tidValidated transid ((htransid,hvalue)#ttrans) = (if (transid = htransid) then True else (tidValidated transid ttrans))"
+
+(**********************FINAL FONCTIONS***************************)
+
+(* traiterMessage
+RETREIVE: message to process AND transBdd
+RETURN:   updated transBdd
+*)
+fun traiterMessage :: "message \<Rightarrow> transBdd \<Rightarrow> transBdd"
+where
+"traiterMessage (Pay tid n) (transidvalsList, transaction) =(if \<not>(tidValidated tid transaction) then (updateTransactionBdd ((updateTransidvalsListPay transidvalsList tid n ), transaction) ) else (transidvalsList, transaction))"|
+"traiterMessage (Ack tid n) (transidvalsList, transaction) =(if \<not>(tidValidated tid transaction) then (updateTransactionBdd ((updateTransidvalsListAck transidvalsList tid n ), transaction) ) else (transidvalsList, transaction))"|
+"traiterMessage (Cancel tid) (transidvalsList, transaction) =(updateTransactionBddCancel tid ((updateTransidvalsListCancel transidvalsList tid), transaction))"
+
+
+(* traiterMessageList
+RETREIVE: message list to process AND transBdd
+RETURN:   updated transBdd
+*)
+fun traiterMessageList :: "message list \<Rightarrow> transBdd \<Rightarrow> transBdd"
+where
+"traiterMessageList [] tBdd = tBdd"|
+"traiterMessageList (hmessage#tmessage) tBdd = (traiterMessageList tmessage (traiterMessage hmessage tBdd))"
+
+(* export
+RETREIVE: transBdd
+RETURN:  transaction list
+*)
+fun export :: "transBdd \<Rightarrow> transaction list"
+where
+"export (tIdV, tr) = tr"
+
+(****************************TESTING*****************************************)
+
+
+(* ----- Exportation en Scala (Isabelle 2014) -------*)
+
+(* Directive d'exportation *)
+export_code export traiterMessage in Scala
+
+
+(****************************PROPERTIES**************************************)
+
+(*Lemme 1: member of transaction > 0           *)
+lemma lem1:"(List.member (export (traiterMessageList messages ([],[]))) (transid, a)) \<longrightarrow> \<not>(a\<le>0)"
+nitpick [timeout=2000]
+quickcheck [narrowing, timeout=2000, size=9]
+sorry
+
+(*Lemme 2: only one occurence of transid in transaction*)
+lemma lem2:"(List.distinct (export (traiterMessageList messages ([],[])) ) )"
+nitpick [timeout=2000]
+quickcheck [narrowing, timeout=2000, size=9]
+sorry
+
+(*lemme 3: even validated transaction can be discard*)
+lemma lem3:"\<not>((List.member (export (traiterMessage (Cancel transid) (traiterMessageList messages ([],[])))) (transid,n)))"
+nitpick [timeout=2000]
+quickcheck [narrowing, timeout=2000, size=9]
+sorry
+
+(*lemme 4: every canceled transaction cannot be validated*)
+lemma lem4:" (messages = (head@(Cancel transid)#tail)) \<longrightarrow> \<not>(List.member (export (traiterMessageList messages ([],[]))) (transid,n))"
+nitpick [timeout=2000]
+quickcheck [narrowing, timeout=2000, size=9]
+sorry
+
+(*lemme 5: Validation of a transaction mean there was a Pay and Ack message with amc\<ge>amm and not canceled*)
+lemma lem5:" ((List.member messages (Pay transid amc))\<and>(List.member messages (Ack transid amm))\<and>\<not>(List.member messages (Cancel transid))\<and>(amc \<ge> amm)\<and>(amc>0))
+               \<longrightarrow> (List.member (export (traiterMessageList messages ([],[]))) (transid,a)) \<longrightarrow> (a\<ge>amm)"
+nitpick [timeout=2000]
+quickcheck [narrowing, timeout=2000, size=9]
+sorry
+
+(*lemme 6: every validated transaction must be a result of a Pay and Ack message where amc\<ge>amm*)
+fun getMinAmm :: "message list \<Rightarrow> transid  \<Rightarrow> nat  \<Rightarrow> nat"
+where
+"getMinAmm [] transid  n = n"|
+"getMinAmm ((Ack tid amm)#tmessage) transid n =(if (transid = tid) 
+                                                  then 
+                                                     (if amm<n 
+                                                       then (getMinAmm tmessage transid amm) 
+                                                       else (getMinAmm tmessage transid n)) 
+                                                  else (getMinAmm tmessage transid n))"|
+"getMinAmm (hmessage#tmessage) transid n = (getMinAmm tmessage transid n)"
+
+fun getMaxAmc :: "message list \<Rightarrow> transid  \<Rightarrow> nat  \<Rightarrow> nat"
+where
+"getMaxAmc [] transid  n = n"|
+"getMaxAmc ((Pay tid amm)#tmessage) transid n =(if (transid = tid) 
+                                                  then 
+                                                     (if amm>n 
+                                                       then (getMaxAmc tmessage transid amm) 
+                                                       else (getMaxAmc tmessage transid n)) 
+                                                  else (getMaxAmc tmessage transid n))"|
+"getMaxAmc (hmessage#tmessage) transid n = (getMaxAmc tmessage transid n)"
+
+fun getMinAmmInit :: "message list \<Rightarrow> transid \<Rightarrow> nat option"
+where
+"getMinAmmInit [] _ = None"|
+"getMinAmmInit ((Ack tid amm)#tmessage) transid =(if (transid = tid) then (Some (getMinAmm tmessage tid amm)) else (getMinAmmInit tmessage transid))"|
+"getMinAmmInit (hmessage#tmessage) transid = (getMinAmmInit tmessage transid)"
+
+fun getMaxAmcInit :: "message list \<Rightarrow> transid \<Rightarrow> nat option"
+where
+"getMaxAmcInit [] _ = None"|
+"getMaxAmcInit ((Pay tid amc)#tmessage) transid =(if (transid = tid) then (Some (getMaxAmc tmessage tid amc)) else (getMaxAmcInit tmessage transid))"|
+"getMaxAmcInit (hmessage#tmessage) transid = (getMaxAmcInit tmessage transid)"
+
+
+lemma lem6:"( (ammOpt = (getMinAmmInit messages transid)) \<and> (ammOpt = (Some ammn)) \<and> (amm = ammn )) \<longrightarrow>
+              (List.member (export (traiterMessageList messages ([],[]))) (transid,amc)) 
+              \<longrightarrow>((List.member messages (Pay transid amc)) \<and> (List.member messages (Ack transid amm))) \<longrightarrow> (amc\<ge>amm)"
+nitpick [timeout=2000]
+quickcheck [narrowing, timeout=2000, size=9]
+sorry
+
+(*lemme 7: every new propositions that doesn't fit bargaining logic are forgot: client expectation have to go up and seller goes down*)
+
+(*Client side*)
+lemma lem71:"((messages = (head@(Pay transid n)#tail)) \<and> (amcOpt = (getMaxAmcInit messages transid)) \<and> (amcOpt = (Some amcn)) \<and> (amc = amcn)  \<and> (a\<le>amc) \<and> (tBdd = (traiterMessageList messages ([],[])) )) 
+               \<longrightarrow> (tBdd = (traiterMessage (Pay transid a) tBdd))"
+nitpick [timeout=2000]
+quickcheck [narrowing, timeout=2000, size=9]
+sorry
+
+(*Marchant side*)
+lemma lem72:"((messages = (head@(Ack transid n)#tail)) \<and> (ammOpt = (getMinAmmInit messages transid)) \<and> (ammOpt = (Some ammn)) \<and> (amm = ammn) \<and> (a\<ge>amm) \<and> (tBdd = (traiterMessageList messages ([],[])) )) 
+               \<longrightarrow> (tBdd = (traiterMessage (Ack transid a) tBdd))"
+nitpick [timeout=2000]
+quickcheck [narrowing, timeout=2000, size=9]
+sorry
+
+(*lemme 8: every validated transaction cannot be renegociated. The price am doesn't change*)
+lemma lem8:"(List.member (export (traiterMessageList messages ([],[]))) (transid,n))
+            \<longrightarrow> (\<not>(List.member addMess (Cancel transid))) \<longrightarrow> (List.member (export (traiterMessageList (messages@addMess) ([],[]))) (transid,n)) "
+nitpick [timeout=2000]
+quickcheck [narrowing, timeout=2000, size=9]
+sorry
+
+(*lemme 9: the amount in validated transaction is equal to the price proposed by the client*)
+lemma lem9:"(List.member (export (traiterMessageList messages ([],[]))) (transid,n)) \<longrightarrow> ((Some n) = (getMaxAmcInit messages transid))"
+nitpick [timeout=2000]
+quickcheck [narrowing, timeout=2000, size=9]
+sorry
+
+end
+
